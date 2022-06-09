@@ -1,0 +1,23 @@
+syntax="proto3";
+
+package MapReduce;
+option go_package="./generated";
+
+message Request {
+    int64 K = 1;
+    string requestType = 2;
+    string userId = 3;
+    string inputPath = 4;
+    string outputPath = 5;
+}
+
+message Response {
+    string userId = 1;
+    bool success = 2;
+    string outputPath = 3;
+    map<string, int64> frequencyMap = 4;
+}
+
+service MapReduceService {
+    rpc DoWork(Request) returns (Response);
+}
