@@ -24,6 +24,7 @@ var (
 	reducers map[string]*Request;
 	mapperOutput map[string]string;
 	topKFrequentItems map[string]int64;
+	pool *ThreadPool;
 )
 
 func (worker *WorkerClient) ScheduleWork(ctx context.Context, request *Request) (*Response, error) {
@@ -37,7 +38,7 @@ func (worker *WorkerClient) ScheduleWork(ctx context.Context, request *Request) 
 	return resp, err;
 }
 
-func (master *Master) scheduleMapJob(worker string, nAttempt int) bool {
+func (master *Master) scheduleMapJob(worker string, nAttempt int, pool *ThreadPool) bool {
 
 	if _, ok := workers[worker]; !ok {
 		workers[worker] = &WorkerClient{UserId: worker};
@@ -66,18 +67,21 @@ func (master *Master) scheduleMapJob(worker string, nAttempt int) bool {
 	if err != nil || !response.Success {
 		if nAttempt == 5 {
 			fmt.Printf("Map failed for worker [%v].\n", worker);
+			pool.AddResult(false);
 			return false;
 		}
 		fmt.Printf("Map failed for worker [%v]. Retrying after [60] seconds...\n", worker);
 		time.Sleep(1*time.Second);
-		return master.scheduleMapJob(worker, nAttempt+1);
+		return master.scheduleMapJob(worker, nAttempt+1, pool);
 	}
 	fmt.Printf("Received Output at: %v\n", response.OutputPath);
 	mapperOutput[worker] = response.OutputPath;
+	
+	pool.AddResult(true);
 	return true;
 }
 
-func (master *Master) scheduleReduceJob(worker string, nAttempt int) bool {
+func (master *Master) scheduleReduceJob(worker string, nAttempt int, pool *ThreadPool) bool {
 
 	if _, ok := mapperOutput[worker]; !ok {
 		fmt.Printf("Map didn't complete on worker [%v]. Hence skipping Reduce", worker);
@@ -110,11 +114,12 @@ func (master *Master) scheduleReduceJob(worker string, nAttempt int) bool {
 	if err != nil || !response.Success {
 		if nAttempt == 5 {
 			fmt.Printf("Reduce failed for worker [%v].\n", worker);
+			pool.AddResult(false);
 			return false;
 		}
 		fmt.Printf("Reduce failed for worker [%v]. Retrying after [60] seconds...\n", worker);
 		time.Sleep(1*time.Second);
-		return master.scheduleReduceJob(worker, nAttempt+1);
+		return master.scheduleReduceJob(worker, nAttempt+1, pool);
 	}
 
 	for key, value := range response.FrequencyMap {
@@ -124,6 +129,7 @@ func (master *Master) scheduleReduceJob(worker string, nAttempt int) bool {
 			topKFrequentItems[key] += value;
 		}
 	}
+	pool.AddResult(true);
 	return true;
 }
 
@@ -133,17 +139,23 @@ func Init() {
 	reducers = make(map[string]*Request);
 	mapperOutput = make(map[string]string);
 	topKFrequentItems = make(map[string]int64);
+	pool = &ThreadPool{};
 }
 func (master *Master) Run() bool {
 	Init();
 
+	pool.Init(len(master.MRSpec.Workers));
 	for i:=0; i<len(master.MRSpec.Workers); i++ {
-		master.scheduleMapJob(master.MRSpec.Workers[i], 0);
+		go master.scheduleMapJob(master.MRSpec.Workers[i], 0, pool);
 	}
-	for i:=0; i<len(master.MRSpec.Workers); i++ {
-		master.scheduleReduceJob(master.MRSpec.Workers[i], 0);
-	}
+	pool.Wait();
 
+	for i:=0; i<len(master.MRSpec.Workers); i++ {
+		go master.scheduleReduceJob(master.MRSpec.Workers[i], 0, pool);
+	}
+	pool.Wait();
+
+	pool.Close();
 	minHeap := MinHeap{};
 	heap.Init(&minHeap);
 
